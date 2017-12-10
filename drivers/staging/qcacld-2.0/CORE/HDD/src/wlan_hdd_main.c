@@ -64,6 +64,7 @@
 #endif
 #include <linux/etherdevice.h>
 #include <linux/firmware.h>
+#include <linux/random.h>
 #include <wcnss_api.h>
 #include <wlan_hdd_tx_rx.h>
 #include <wniApi.h>
@@ -186,6 +187,8 @@ static struct kparam_string fwpath = {
 static char *country_code;
 static int   enable_11d = -1;
 static int   enable_dfs_chan_scan = -1;
+
+static int randomize_mac = 1;
 
 #ifndef MODULE
 static int wlan_hdd_inited;
@@ -14070,12 +14073,22 @@ static int hdd_cnss_wlan_mac(hdd_context_t *hdd_ctx)
 	uint32_t max_mac_addr = VOS_MAX_CONCURRENCY_PERSONA;
 	uint32_t mac_addr_size = VOS_MAC_ADDR_SIZE;
 	u8 *addr, *buf;
+	u8 addr_random[VOS_MAX_CONCURRENCY_PERSONA * VOS_MAC_ADDR_SIZE];
 	struct device *dev = hdd_ctx->parent_dev;
 	hdd_config_t *ini = hdd_ctx->cfg_ini;
 	tSirMacAddr customMacAddr;
 	VOS_STATUS status;
 
-	addr = vos_get_cnss_wlan_mac_buff(dev, &no_of_mac_addr);
+	if (randomize_mac) {
+		get_random_bytes(addr_random, sizeof(addr_random));
+		for (iter = 0; iter < VOS_MAX_CONCURRENCY_PERSONA * VOS_MAC_ADDR_SIZE; iter += VOS_MAC_ADDR_SIZE) {
+			addr_random[iter] &= (addr_random[iter] & 0xfe) | 2;
+		}
+		addr = (u8*)&addr_random;
+		no_of_mac_addr = VOS_MAX_CONCURRENCY_PERSONA;
+	} else {
+		addr = vos_get_cnss_wlan_mac_buff(dev, &no_of_mac_addr);
+	}
 
 	if (no_of_mac_addr == 0 || !addr) {
 		hddLog(LOG1,
@@ -15269,6 +15282,40 @@ success:
    return 0;
 }
 
+static struct ctl_table randomize_mac_table[] =
+{
+    {
+        .procname     = "randomize_mac",
+        .data         = &randomize_mac,
+        .maxlen       = sizeof(int),
+        .mode         = 0600,
+        .proc_handler = proc_dointvec
+    },
+    { }
+};
+
+static struct ctl_table cnss_table[] =
+{
+    {
+        .procname = "cnss",
+        .maxlen   = 0,
+        .mode     = 0555,
+        .child    = randomize_mac_table,
+    },
+    { }
+};
+
+static struct ctl_table dev_table[] =
+{
+    {
+        .procname = "dev",
+        .maxlen   = 0,
+        .mode     = 0555,
+        .child    = cnss_table,
+    },
+    { }
+};
+
 /**---------------------------------------------------------------------------
 
   \brief hdd_driver_init() - Core Driver Init Function
@@ -15288,6 +15335,8 @@ static int hdd_driver_init( void)
    int ret_status = 0;
    unsigned long rc;
    u_int64_t start;
+
+   register_sysctl_table(dev_table);
 
    start = adf_get_boottime();
 
